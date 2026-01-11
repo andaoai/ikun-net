@@ -6,11 +6,15 @@ ImageNet-1K 数据集下载脚本
 """
 
 import argparse
+import io
 import json
 import os
+import zipfile
 from pathlib import Path
 
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, DownloadColumn, TimeRemainingColumn
+from tqdm import tqdm
 
 console = Console()
 
@@ -121,9 +125,23 @@ def download_imagenet1k(
 
     console.print(f"[bold blue]开始下载 ImageNet-1K ({dataset})...[/bold blue]")
 
+    # 检查依赖
+    try:
+        import requests
+    except ImportError:
+        console.print("[bold red]✗[/bold red] 未安装 requests 包")
+        return
+
     try:
         from kaggle.api.kaggle_api_extended import KaggleApi
+    except ImportError:
+        console.print("[bold red]✗[/bold red] 未安装 kaggle 包")
+        console.print("请运行: uv add kaggle")
+        return
 
+    import re
+
+    try:
         # 验证 Kaggle API 认证
         api = KaggleApi()
         api.authenticate()
@@ -134,37 +152,73 @@ def download_imagenet1k(
         save_path = Path(save_path)
         save_path.mkdir(parents=True, exist_ok=True)
 
-        # 下载数据集 (使用 dataset API 而不是 competition API)
-        console.print(f"[yellow]下载数据集到: {save_path}[/yellow]")
-        api.dataset_download_files(
-            dataset=dataset_ref,
-            path=str(save_path),
-            unzip=False,  # 手动解压以显示进度
-        )
+        # 获取数据集信息
+        console.print("[yellow]正在获取数据集信息...[/yellow]")
+
+        # 构建下载 URL
+        owner, slug = dataset_ref.split("/")
+        download_url = f"https://www.kaggle.com/api/v1/datasets/download/{owner}/{slug}"
+
+        # 发送请求获取文件
+        console.print(f"[yellow]开始下载...[/yellow]")
+        response = requests.get(download_url, stream=True)
+        response.raise_for_status()
+
+        # 检查是否是 ZIP 文件
+        total_size = int(response.headers.get('content-length', 0))
+
+        # 从 Content-Disposition 获取文件名
+        filename = f"{dataset_ref.replace('/', '-')}.zip"
+        if 'content-disposition' in response.headers:
+            cd = response.headers['content-disposition']
+            fname_match = re.search(r'filename\*?=(?:UTF-\d\'\')?([^;]+)', cd)
+            if fname_match:
+                filename = fname_match.group(1).strip('"')
+
+        zip_path = save_path / filename
+        console.print(f"[cyan]保存到: {zip_path}[/cyan]")
+        console.print(f"[cyan]文件大小: {total_size / (1024**3):.2f} GB[/cyan]\n")
+
+        # 下载并显示进度
+        with open(zip_path, 'wb') as f:
+            with tqdm(
+                total=total_size,
+                unit='B',
+                unit_scale=True,
+                unit_divisor=1024,
+                desc=filename,
+                ncols=100,
+            ) as pbar:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        pbar.update(len(chunk))
+
+        console.print(f"\n[green]✓[/green] 下载完成: {zip_path}")
 
         # 解压下载的文件
-        console.print("[yellow]解压文件...[/yellow]")
-        import zipfile
-        for zip_file in save_path.glob("*.zip"):
-            console.print(f"  解压: {zip_file.name}")
-            with zipfile.ZipFile(zip_file, 'r') as zip_ref:
-                zip_ref.extractall(save_path)
-            # 删除 zip 文件以节省空间
-            zip_file.unlink()
+        console.print("\n[yellow]解压文件...[/yellow]")
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            # 获取文件列表
+            file_list = zip_ref.namelist()
+            console.print(f"[cyan]共 {len(file_list)} 个文件[/cyan]\n")
 
-        console.print(f"\n[green]✓[/green] 下载完成!")
-        console.print(f"\n数据已保存到: {save_path}")
+            # 解压并显示进度
+            for file in tqdm(file_list, desc="解压中", ncols=100):
+                zip_ref.extract(file, save_path)
 
-        # 列出下载的文件
-        console.print("\n[bold]下载的文件:[/bold]")
-        for item in sorted(save_path.rglob("*")):
-            if item.is_file():
-                size_mb = item.stat().st_size / (1024 * 1024)
-                console.print(f"  - {item.relative_to(save_path)} ({size_mb:.1f} MB)")
+        # 删除 zip 文件以节省空间
+        zip_path.unlink()
+        console.print(f"\n[green]✓[/green] 解压完成!")
 
-    except ImportError:
-        console.print("[bold red]✗[/bold red] 未安装 kaggle 包")
-        console.print("请运行: uv add kaggle")
+        console.print(f"\n[bold]数据已保存到: {save_path}[/bold]")
+
+        # 统计下载的文件
+        console.print("\n[bold]文件统计:[/bold]")
+        file_count = sum(1 for _ in save_path.rglob("*") if _.is_file())
+        dir_count = sum(1 for _ in save_path.rglob("*") if _.is_dir())
+        console.print(f"  - 文件数: {file_count}")
+        console.print(f"  - 目录数: {dir_count}")
 
     except Exception as e:
         console.print(f"[bold red]✗[/bold red] Kaggle API 下载失败: {e}")

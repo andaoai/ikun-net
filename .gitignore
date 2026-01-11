@@ -9,4 +9,10 @@ wheels/
 # Virtual environments
 .venv
 uv.lock
+
+# Kaggle credentials
 data/kaggle.json
+
+# Downloaded datasets
+data/imagenet1k/
+data/*/
