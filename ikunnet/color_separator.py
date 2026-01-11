@@ -215,7 +215,8 @@ class ColorSeparator:
     def create_binary_masks(
         self,
         image: np.ndarray,
-        color_groups: list[ColorGroup]
+        color_groups: list[ColorGroup],
+        preprocess_info: dict[str, Any] | None = None
     ) -> dict[str, np.ndarray]:
         """
         为每个颜色组合创建二值化掩码
@@ -223,6 +224,7 @@ class ColorSeparator:
         Args:
             image: 输入图像
             color_groups: 颜色组合列表
+            preprocess_info: 预处理信息（用于排除填充区域）
 
         Returns:
             字典: {group_id: binary_mask}
@@ -243,6 +245,26 @@ class ColorSeparator:
 
             # Convert boolean to 0/255
             masks[group.group_id] = mask.astype(np.uint8) * 255
+
+        # 如果有预处理信息，将填充区域在所有mask中设为0
+        if preprocess_info is not None:
+            padding = preprocess_info["padding"]
+            target_size = preprocess_info["target_size"]
+            resized_size = preprocess_info["resized_size"]
+
+            # 计算有效区域（非填充区域）
+            pad_top = padding["top"]
+            pad_bottom = padding["bottom"]
+            pad_left = padding["left"]
+            pad_right = padding["right"]
+
+            # 创建有效区域的mask（1=有效，0=填充）
+            valid_mask = np.zeros((target_size, target_size), dtype=np.uint8)
+            valid_mask[pad_top:target_size - pad_bottom, pad_left:target_size - pad_right] = 255
+
+            # 将所有mask的填充区域设为0
+            for group_id in masks:
+                masks[group_id] = masks[group_id] & valid_mask
 
         return masks
 
@@ -278,7 +300,7 @@ class ColorSeparator:
         color_groups = self.analyze_color_groups(image)
 
         # Create binary masks
-        masks = self.create_binary_masks(image, color_groups)
+        masks = self.create_binary_masks(image, color_groups, preprocess_info)
 
         processing_time = time.time() - start_time
 
