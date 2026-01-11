@@ -268,8 +268,8 @@ class ColorSeparator:
                 (image_tensor[:, :, 2] >= b_min) & (image_tensor[:, :, 2] <= b_max)
             )
 
-            # tensor -> numpy
-            mask_uint8 = (mask.byte() * 255).cpu().numpy().astype(np.uint8)
+            # tensor -> numpy (返回 0/1，用于后续算法处理)
+            mask_uint8 = mask.byte().cpu().numpy().astype(np.uint8)
             masks[group.group_id] = mask_uint8
 
         # 处理填充区域
@@ -394,8 +394,9 @@ class ColorSeparator:
             mask_filename = f"mask_r{parts[0]}_g{parts[1]}_b{parts[2]}.png"
             mask_path = output_path / mask_filename
 
-            # Save mask (OpenCV expects grayscale)
-            cv2.imwrite(str(mask_path), mask)
+            # Save mask (将 0/1 转换为 0/255 用于可视化)
+            mask_255 = (mask * 255).astype(np.uint8)
+            cv2.imwrite(str(mask_path), mask_255)
             saved_files.append(mask_path)
 
             # Update metadata with mask path
