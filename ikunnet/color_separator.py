@@ -2,8 +2,10 @@
 Color separator module for analyzing images and generating binary color masks.
 
 This module implements RGB 3D interval combination for color layering.
+All core operations use PyTorch for CPU/GPU acceleration support.
 """
 
+import json
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -11,6 +13,8 @@ from typing import Any
 
 import cv2
 import numpy as np
+import torch
+import torch.nn.functional as F
 from rich.console import Console
 from rich.table import Table
 
@@ -42,13 +46,14 @@ class ColorGroup:
 class ColorSeparator:
     """颜色分层器：使用RGB三维区间组合进行颜色分析"""
 
-    def __init__(self, interval_size: int = 20, min_pixel_count: int = 100):
+    def __init__(self, interval_size: int = 20, min_pixel_count: int = 100, device: str = 'cpu'):
         """
         初始化颜色分层器
 
         Args:
             interval_size: RGB每个通道的区间大小 (默认20)
             min_pixel_count: 最小像素数阈值，低于此值不生成mask (默认100)
+            device: 计算设备，支持 'cpu', 'cuda', 'auto' (默认 'cpu')
         """
         if interval_size <= 0 or interval_size > 256:
             raise ValueError(f"interval_size must be between 1 and 256, got {interval_size}")
@@ -57,6 +62,17 @@ class ColorSeparator:
 
         self.interval_size = interval_size
         self.min_pixel_count = min_pixel_count
+
+        # 设置设备
+        if device == 'auto':
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        if device == 'cuda' and not torch.cuda.is_available():
+            import warnings
+            warnings.warn("CUDA not available, falling back to CPU")
+            device = 'cpu'
+
+        self.device = torch.device(device)
         self.console = Console()
 
     def _get_interval_index(self, value: int) -> int:
@@ -84,6 +100,7 @@ class ColorSeparator:
     def preprocess_image(self, image: np.ndarray, target_size: int = 640) -> tuple[np.ndarray, dict[str, Any]]:
         """
         图像预处理：保持宽高比缩放到目标尺寸，短边用0填充
+        使用 PyTorch 实现，支持 CPU/GPU 加速
 
         Args:
             image: 输入图像 (H, W, C)
@@ -94,31 +111,32 @@ class ColorSeparator:
         """
         original_height, original_width = image.shape[:2]
 
-        # 计算缩放比例：以长边为准
-        scale = target_size / max(original_width, original_height)
+        # numpy -> tensor
+        image_tensor = torch.from_numpy(image).float()  # (H, W, 3)
+        image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0)  # (1, 3, H, W)
+        image_tensor = image_tensor.to(self.device)
 
-        # 按比例缩放图像
+        # 计算缩放比例
+        scale = target_size / max(original_width, original_height)
         new_width = int(original_width * scale)
         new_height = int(original_height * scale)
 
-        # 使用OpenCV缩放图像
-        resized = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+        # PyTorch 缩放
+        resized = F.interpolate(
+            image_tensor,
+            size=(new_height, new_width),
+            mode='bilinear',
+            align_corners=False
+        )
 
-        # 创建目标尺寸的黑色背景
-        canvas = np.zeros((target_size, target_size, 3), dtype=image.dtype)
-
-        # 计算填充位置（居中）
+        # 创建画布并填充
+        canvas = torch.zeros(1, 3, target_size, target_size, device=self.device)
         y_offset = (target_size - new_height) // 2
         x_offset = (target_size - new_width) // 2
+        canvas[:, :, y_offset:y_offset + new_height, x_offset:x_offset + new_width] = resized
 
-        # 将缩放后的图像放到画布中心
-        canvas[y_offset:y_offset + new_height, x_offset:x_offset + new_width] = resized
-
-        # 计算填充量
-        pad_top = y_offset
-        pad_bottom = target_size - new_height - y_offset
-        pad_left = x_offset
-        pad_right = target_size - new_width - x_offset
+        # tensor -> numpy
+        canvas = canvas.squeeze(0).permute(1, 2, 0).cpu().numpy().astype(np.uint8)
 
         # 预处理信息
         preprocess_info = {
@@ -127,10 +145,10 @@ class ColorSeparator:
             "scale_factor": round(scale, 4),
             "resized_size": (new_width, new_height),
             "padding": {
-                "top": pad_top,
-                "bottom": pad_bottom,
-                "left": pad_left,
-                "right": pad_right
+                "top": y_offset,
+                "bottom": target_size - new_height - y_offset,
+                "left": x_offset,
+                "right": target_size - new_width - x_offset
             }
         }
 
@@ -139,6 +157,7 @@ class ColorSeparator:
     def analyze_color_groups(self, image: np.ndarray) -> list[ColorGroup]:
         """
         分析图像中的颜色组合
+        使用 PyTorch 实现，支持 CPU/GPU 加速
 
         算法流程：
         1. 将每个像素的RGB值映射到对应的区间索引
@@ -155,41 +174,45 @@ class ColorSeparator:
         height, width = image.shape[:2]
         total_pixels = height * width
 
-        # Reshape to (N, 3) for efficient processing
-        pixels = image.reshape(-1, 3)
+        # numpy -> tensor
+        image_tensor = torch.from_numpy(image).long().to(self.device)  # (H, W, 3)
 
-        # Calculate interval indices for each channel
-        r_indices = pixels[:, 0] // self.interval_size
-        g_indices = pixels[:, 1] // self.interval_size
-        b_indices = pixels[:, 2] // self.interval_size
+        # Reshape to (N, 3)
+        pixels = image_tensor.reshape(-1, 3)  # (N, 3)
 
-        # Clamp max index to handle edge case (value 255)
-        max_idx = 255 // self.interval_size
-        r_indices = np.minimum(r_indices, max_idx).astype(np.int32)
-        g_indices = np.minimum(g_indices, max_idx).astype(np.int32)
-        b_indices = np.minimum(b_indices, max_idx).astype(np.int32)
+        # 计算区间索引
+        interval_size = self.interval_size
+        max_idx = 255 // interval_size
 
-        # Create unique group keys
-        # Use encoding: r_idx * 10000 + g_idx * 100 + b_idx
+        r_indices = torch.div(pixels[:, 0], interval_size, rounding_mode='floor')
+        g_indices = torch.div(pixels[:, 1], interval_size, rounding_mode='floor')
+        b_indices = torch.div(pixels[:, 2], interval_size, rounding_mode='floor')
+
+        # Clamp
+        r_indices = torch.minimum(r_indices, torch.tensor(max_idx, device=self.device))
+        g_indices = torch.minimum(g_indices, torch.tensor(max_idx, device=self.device))
+        b_indices = torch.minimum(b_indices, torch.tensor(max_idx, device=self.device))
+
+        # 编码
         group_keys = r_indices * 10000 + g_indices * 100 + b_indices
 
-        # Count unique groups
-        unique_groups, counts = np.unique(group_keys, return_counts=True)
+        # 统计
+        unique_groups, counts = torch.unique(group_keys, return_counts=True)
 
-        # Build ColorGroup objects
+        # tensor -> numpy
+        unique_groups = unique_groups.cpu().numpy()
+        counts = counts.cpu().numpy()
+
+        # 构建 ColorGroup
         color_groups = []
-
         for group_key, count in zip(unique_groups, counts):
-            # Filter by minimum pixel count
             if count < self.min_pixel_count:
                 continue
 
-            # Decode group key
             r_idx = group_key // 10000
             g_idx = (group_key % 10000) // 100
             b_idx = group_key % 100
 
-            # Get intervals and center color
             r_interval = self._get_interval_range(r_idx)
             g_interval = self._get_interval_range(g_idx)
             b_interval = self._get_interval_range(b_idx)
@@ -207,9 +230,7 @@ class ColorSeparator:
                 percentage=count / total_pixels
             ))
 
-        # Sort by pixel count (descending)
         color_groups.sort(key=lambda g: g.pixel_count, reverse=True)
-
         return color_groups
 
     def create_binary_masks(
@@ -220,6 +241,7 @@ class ColorSeparator:
     ) -> dict[str, np.ndarray]:
         """
         为每个颜色组合创建二值化掩码
+        使用 PyTorch 实现，支持 CPU/GPU 加速
 
         Args:
             image: 输入图像
@@ -231,38 +253,38 @@ class ColorSeparator:
         """
         masks = {}
 
+        # numpy -> tensor (一次性)
+        image_tensor = torch.from_numpy(image).long().to(self.device)  # (H, W, 3)
+
         for group in color_groups:
             r_min, r_max = group.r_interval
             g_min, g_max = group.g_interval
             b_min, b_max = group.b_interval
 
-            # Create boolean mask for pixels in this color range
+            # 向量化比较
             mask = (
-                (image[:, :, 0] >= r_min) & (image[:, :, 0] <= r_max) &
-                (image[:, :, 1] >= g_min) & (image[:, :, 1] <= g_max) &
-                (image[:, :, 2] >= b_min) & (image[:, :, 2] <= b_max)
+                (image_tensor[:, :, 0] >= r_min) & (image_tensor[:, :, 0] <= r_max) &
+                (image_tensor[:, :, 1] >= g_min) & (image_tensor[:, :, 1] <= g_max) &
+                (image_tensor[:, :, 2] >= b_min) & (image_tensor[:, :, 2] <= b_max)
             )
 
-            # Convert boolean to 0/255
-            masks[group.group_id] = mask.astype(np.uint8) * 255
+            # tensor -> numpy
+            mask_uint8 = (mask.byte() * 255).cpu().numpy().astype(np.uint8)
+            masks[group.group_id] = mask_uint8
 
-        # 如果有预处理信息，将填充区域在所有mask中设为0
+        # 处理填充区域
         if preprocess_info is not None:
             padding = preprocess_info["padding"]
             target_size = preprocess_info["target_size"]
-            resized_size = preprocess_info["resized_size"]
 
-            # 计算有效区域（非填充区域）
             pad_top = padding["top"]
             pad_bottom = padding["bottom"]
             pad_left = padding["left"]
             pad_right = padding["right"]
 
-            # 创建有效区域的mask（1=有效，0=填充）
             valid_mask = np.zeros((target_size, target_size), dtype=np.uint8)
             valid_mask[pad_top:target_size - pad_bottom, pad_left:target_size - pad_right] = 255
 
-            # 将所有mask的填充区域设为0
             for group_id in masks:
                 masks[group_id] = masks[group_id] & valid_mask
 
@@ -315,7 +337,8 @@ class ColorSeparator:
             "preprocessing": preprocess_info,
             "parameters": {
                 "interval_size": self.interval_size,
-                "min_pixel_count": self.min_pixel_count
+                "min_pixel_count": self.min_pixel_count,
+                "device": str(self.device)
             },
             "color_groups": [g.to_dict() for g in color_groups],
             "statistics": {
@@ -384,7 +407,6 @@ class ColorSeparator:
                 group_dict["mask_path"] = mask_filename
 
         # Save metadata as JSON
-        import json
         metadata_path = output_path / "metadata.json"
         with open(metadata_path, "w") as f:
             json.dump(results["metadata"], f, indent=2)

@@ -82,12 +82,14 @@ def handle_separate_colors(args: argparse.Namespace):
     # Create color separator
     separator = ColorSeparator(
         interval_size=args.interval_size,
-        min_pixel_count=args.min_pixels
+        min_pixel_count=args.min_pixels,
+        device=args.device
     )
 
     console.print(f"[cyan]Processing image: {input_path}[/cyan]")
     console.print(f"  Interval size: {args.interval_size}")
     console.print(f"  Min pixel count: {args.min_pixels}")
+    console.print(f"  Device: {separator.device}")
     console.print()
 
     try:
@@ -165,6 +167,13 @@ def add_separate_colors_parser(subparsers):
         '--analyze-only',
         action='store_true',
         help='Only analyze colors, do not save masks'
+    )
+
+    parser.add_argument(
+        '--device',
+        choices=['cpu', 'cuda', 'auto'],
+        default='cpu',
+        help='Device to use for processing (default: cpu)'
     )
 
     parser.set_defaults(func=handle_separate_colors)
