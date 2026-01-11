@@ -16,3 +16,7 @@ data/kaggle.json
 # Downloaded datasets
 data/imagenet1k/
 data/*/
+
+# Output and temporary files
+tmp/
+outputs/
