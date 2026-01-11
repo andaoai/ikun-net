@@ -81,6 +81,61 @@ class ColorSeparator:
 
         return (r_center, g_center, b_center)
 
+    def preprocess_image(self, image: np.ndarray, target_size: int = 640) -> tuple[np.ndarray, dict[str, Any]]:
+        """
+        图像预处理：保持宽高比缩放到目标尺寸，短边用0填充
+
+        Args:
+            image: 输入图像 (H, W, C)
+            target_size: 目标尺寸 (默认640)
+
+        Returns:
+            (预处理后的图像, 预处理信息字典)
+        """
+        original_height, original_width = image.shape[:2]
+
+        # 计算缩放比例：以长边为准
+        scale = target_size / max(original_width, original_height)
+
+        # 按比例缩放图像
+        new_width = int(original_width * scale)
+        new_height = int(original_height * scale)
+
+        # 使用OpenCV缩放图像
+        resized = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+        # 创建目标尺寸的黑色背景
+        canvas = np.zeros((target_size, target_size, 3), dtype=image.dtype)
+
+        # 计算填充位置（居中）
+        y_offset = (target_size - new_height) // 2
+        x_offset = (target_size - new_width) // 2
+
+        # 将缩放后的图像放到画布中心
+        canvas[y_offset:y_offset + new_height, x_offset:x_offset + new_width] = resized
+
+        # 计算填充量
+        pad_top = y_offset
+        pad_bottom = target_size - new_height - y_offset
+        pad_left = x_offset
+        pad_right = target_size - new_width - x_offset
+
+        # 预处理信息
+        preprocess_info = {
+            "original_size": (original_width, original_height),
+            "target_size": target_size,
+            "scale_factor": round(scale, 4),
+            "resized_size": (new_width, new_height),
+            "padding": {
+                "top": pad_top,
+                "bottom": pad_bottom,
+                "left": pad_left,
+                "right": pad_right
+            }
+        }
+
+        return canvas, preprocess_info
+
     def analyze_color_groups(self, image: np.ndarray) -> list[ColorGroup]:
         """
         分析图像中的颜色组合
@@ -214,6 +269,9 @@ class ColorSeparator:
         # Convert BGR to RGB (OpenCV uses BGR by default)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
+        # 预处理：标准化为640x640
+        image, preprocess_info = self.preprocess_image(image, target_size=640)
+
         height, width = image.shape[:2]
 
         # Analyze color groups
@@ -228,10 +286,11 @@ class ColorSeparator:
         metadata = {
             "image_info": {
                 "path": str(image_path),
-                "width": width,
-                "height": height,
+                "original_size": preprocess_info["original_size"],
+                "processed_size": (width, height),
                 "total_pixels": height * width
             },
+            "preprocessing": preprocess_info,
             "parameters": {
                 "interval_size": self.interval_size,
                 "min_pixel_count": self.min_pixel_count
@@ -325,8 +384,13 @@ class ColorSeparator:
 
             # Image info
             img_info = results["metadata"]["image_info"]
+            preprocess = results["metadata"]["preprocessing"]
             f.write(f"Image: {img_info['path']}\n")
-            f.write(f"Size: {img_info['width']}x{img_info['height']} ({img_info['total_pixels']} pixels)\n\n")
+            f.write(f"Original Size: {img_info['original_size'][0]}x{img_info['original_size'][1]}\n")
+            f.write(f"Processed Size: {img_info['processed_size'][0]}x{img_info['processed_size'][1]} ({img_info['total_pixels']} pixels)\n")
+            f.write(f"Scale Factor: {preprocess['scale_factor']}\n")
+            f.write(f"Padding: top={preprocess['padding']['top']}, bottom={preprocess['padding']['bottom']}, "
+                   f"left={preprocess['padding']['left']}, right={preprocess['padding']['right']}\n\n")
 
             # Parameters
             params = results["metadata"]["parameters"]
