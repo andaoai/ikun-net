@@ -15,8 +15,15 @@ data/kaggle.json
 
 # Downloaded datasets
 data/imagenet1k/
-data/*/
+
+# Generated datasets
+data/masks_dataset/
 
 # Output and temporary files
 tmp/
 outputs/
+
+# Model checkpoints
+checkpoints/
+checkpoints_*/
+
