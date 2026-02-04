@@ -32,17 +32,15 @@ class ProjectionHead(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: Features from encoder (B, feature_dim), L2 normalized
+            x: Features from encoder (B, feature_dim)
 
         Returns:
-            embeddings: (B, embedding_dim), L2 normalized
+            embeddings: (B, embedding_dim)
         """
         # Project to embedding space
         z = self.projection(x)
 
-        # L2 normalize (unit sphere for contrastive learning)
-        z = nn.functional.normalize(z, dim=1)
-
+        # No normalization - VICReg needs variance
         return z
 
 

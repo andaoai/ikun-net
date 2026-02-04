@@ -184,9 +184,9 @@ def main():
                        help='Batch size')
     parser.add_argument('--epochs', type=int, default=100,
                        help='Number of training epochs')
-    parser.add_argument('--lr', type=float, default=1e-2,
+    parser.add_argument('--lr', type=float, default=1e-3,
                        help='Learning rate')
-    parser.add_argument('--weight-decay', type=float, default=1e-2,
+    parser.add_argument('--weight-decay', type=float, default=1e-4,
                        help='Weight decay')
 
     # VICReg arguments

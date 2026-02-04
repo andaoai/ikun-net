@@ -86,9 +86,7 @@ class CNNEncoder(nn.Module):
         x = self.gap(x)  # (B, 256, 1, 1)
         x = x.squeeze(-1).squeeze(-1)  # (B, 256)
 
-        # L2 normalize (unit sphere)
-        x = F.normalize(x, dim=1)
-
+        # No normalization - VICReg needs variance
         return x
 
 
