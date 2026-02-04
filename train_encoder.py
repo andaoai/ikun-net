@@ -82,7 +82,6 @@ def create_online_dataloaders(
     interval_size: int,
     min_pixel_count: int,
     separator_device: str,
-    loss_type: str = 'contrastive',
     num_workers: int = 0
 ):
     """
@@ -94,7 +93,6 @@ def create_online_dataloaders(
         interval_size: Color interval size for ColorSeparator
         min_pixel_count: Minimum pixel count for color groups
         separator_device: Device for ColorSeparator ('cpu' or 'cuda')
-        loss_type: 'contrastive' (returns 2 views) or 'uniformity' (returns 1 view)
         num_workers: Number of workers (must be 0 for ColorSeparator)
 
     Returns:
@@ -134,23 +132,13 @@ def create_online_dataloaders(
 
         # Handle empty batch
         if len(all_masks) == 0:
-            if loss_type == 'contrastive':
-                return torch.zeros(0, 1, 224, 224), torch.zeros(0, 1, 224, 224)
-            else:  # uniformity
-                return torch.zeros(0, 1, 224, 224)
+            return torch.zeros(0, 1, 224, 224)
 
         # Stack all masks into one batch
         masks_batch = torch.stack(all_masks, dim=0)  # (total_masks, 1, 224, 224)
 
-        # Return format based on loss_type
-        if loss_type == 'contrastive':
-            # Create two identical views for contrastive learning
-            view1 = masks_batch.clone()
-            view2 = masks_batch.clone()
-            return view1, view2
-        else:  # uniformity
-            # Return single view for uniformity loss
-            return masks_batch
+        # Return single view for VICReg
+        return masks_batch
 
     train_loader = DataLoader(
         train_dataset,
@@ -165,11 +153,7 @@ def create_online_dataloaders(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train mask encoder with contrastive learning")
-
-    # Mode selection
-    parser.add_argument('--online', action='store_true',
-                       help='Use online mask extraction from ImageNet images')
+    parser = argparse.ArgumentParser(description="Train mask encoder with VICReg representation learning")
 
     # Data arguments
     parser.add_argument('--data-dir', type=str, default='data/masks_dataset/masks',
@@ -178,6 +162,8 @@ def main():
                        help='Image size after augmentation (offline mode only)')
 
     # Online mode arguments
+    parser.add_argument('--online', action='store_true',
+                       help='Use online mask extraction from ImageNet images')
     parser.add_argument('--images-per-batch', type=int, default=4,
                        help='Number of images to process per batch (online mode)')
     parser.add_argument('--interval-size', type=int, default=40,
@@ -198,15 +184,18 @@ def main():
                        help='Batch size')
     parser.add_argument('--epochs', type=int, default=100,
                        help='Number of training epochs')
-    parser.add_argument('--lr', type=float, default=1e-3,
+    parser.add_argument('--lr', type=float, default=1e-2,
                        help='Learning rate')
-    parser.add_argument('--weight-decay', type=float, default=1e-4,
+    parser.add_argument('--weight-decay', type=float, default=1e-2,
                        help='Weight decay')
-    parser.add_argument('--temperature', type=float, default=0.5,
-                       help='Temperature for NT-Xent loss (contrastive) or uniformity loss')
-    parser.add_argument('--loss-type', type=str, default='contrastive',
-                       choices=['contrastive', 'uniformity'],
-                       help='Loss function type: contrastive or uniformity')
+
+    # VICReg arguments
+    parser.add_argument('--variance-weight', type=float, default=1.0,
+                       help='Weight for variance loss term in VICReg')
+    parser.add_argument('--covariance-weight', type=float, default=1.0,
+                       help='Weight for covariance loss term in VICReg')
+    parser.add_argument('--std-target', type=float, default=1.0,
+                       help='Target standard deviation for VICReg')
 
     # System arguments
     parser.add_argument('--device', type=str, default='cuda', choices=['cpu', 'cuda'],
@@ -250,7 +239,6 @@ def main():
             interval_size=args.interval_size,
             min_pixel_count=args.min_pixels,
             separator_device=args.separator_device,
-            loss_type=args.loss_type,
             num_workers=num_workers
         )
     else:
@@ -283,8 +271,9 @@ def main():
         val_loader=val_loader,
         lr=args.lr,
         weight_decay=args.weight_decay,
-        temperature=args.temperature,
-        loss_type=args.loss_type,
+        variance_weight=args.variance_weight,
+        covariance_weight=args.covariance_weight,
+        std_target=args.std_target,
         device=args.device,
         save_dir=args.save_dir
     )

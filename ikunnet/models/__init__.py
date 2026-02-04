@@ -1,8 +1,7 @@
-"""Models for mask embedding with contrastive learning."""
+"""Models for mask embedding representation learning."""
 
 from ikunnet.models.encoder import CNNEncoder
 from ikunnet.models.projection_head import ProjectionHead
-from ikunnet.models.contrastive_loss import NTXentLoss
-from ikunnet.models.uniformity_loss import UniformityLoss
+from ikunnet.models.vicreg_loss import VICRegLoss
 
-__all__ = ["CNNEncoder", "ProjectionHead", "NTXentLoss", "UniformityLoss"]
+__all__ = ["CNNEncoder", "ProjectionHead", "VICRegLoss"]

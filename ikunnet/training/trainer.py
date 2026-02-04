@@ -15,15 +15,14 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 
 from ikunnet.models.encoder import CNNEncoder
 from ikunnet.models.projection_head import ProjectionHead
-from ikunnet.models.contrastive_loss import NTXentLoss
-from ikunnet.models.uniformity_loss import UniformityLoss
+from ikunnet.models.vicreg_loss import VICRegLoss
 from ikunnet.training.dataset import MaskDataset
 from ikunnet.training.augmentation import MaskTransform
 
 
 class Trainer:
     """
-    Trainer for contrastive learning on mask embeddings.
+    Trainer for mask embedding representation learning with VICReg.
     """
 
     def __init__(
@@ -34,21 +33,23 @@ class Trainer:
         val_loader: Optional[DataLoader] = None,
         lr: float = 1e-3,
         weight_decay: float = 1e-4,
-        temperature: float = 0.5,
-        loss_type: str = 'contrastive',
+        variance_weight: float = 1.0,
+        covariance_weight: float = 1.0,
+        std_target: float = 1.0,
         device: str = 'cuda',
         save_dir: str = 'checkpoints'
     ):
         """
         Args:
             encoder: CNN encoder
-            projection_head: Projection head for contrastive learning
+            projection_head: Projection head
             train_loader: Training dataloader
             val_loader: Optional validation dataloader
             lr: Learning rate
             weight_decay: Weight decay for Adam
-            temperature: Temperature for NT-Xent loss (contrastive) or uniformity loss
-            loss_type: 'contrastive' or 'uniformity'
+            variance_weight: Weight for variance loss term
+            covariance_weight: Weight for covariance loss term
+            std_target: Target standard deviation for VICReg
             device: 'cuda' or 'cpu'
             save_dir: Directory to save checkpoints
         """
@@ -56,16 +57,14 @@ class Trainer:
         self.projection_head = projection_head.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
-        self.loss_type = loss_type
         self.device = device
 
-        # Loss function based on loss_type
-        if loss_type == 'contrastive':
-            self.criterion = NTXentLoss(temperature=temperature)
-        elif loss_type == 'uniformity':
-            self.criterion = UniformityLoss(temperature=temperature)
-        else:
-            raise ValueError(f"Unknown loss_type: {loss_type}")
+        # VICReg loss function
+        self.criterion = VICRegLoss(
+            variance_weight=variance_weight,
+            covariance_weight=covariance_weight,
+            std_target=std_target
+        )
 
         # Optimizer (only for encoder and projection_head)
         self.optimizer = optim.Adam(
@@ -121,22 +120,15 @@ class Trainer:
             task = progress.add_task(f"Epoch {epoch}", total=len(self.train_loader))
 
             for batch in self.train_loader:
-                # batch is (view1, view2) for contrastive, (masks,) for uniformity
-                if self.loss_type == 'contrastive':
-                    view1, view2 = batch
-                    # Skip empty batches (can happen in online mode)
-                    if view1.size(0) == 0:
-                        progress.update(task, advance=1)
-                        continue
-                    view1 = view1.to(self.device)
-                    view2 = view2.to(self.device)
-                else:  # uniformity
-                    masks = batch
-                    # Skip empty batches
-                    if masks.size(0) == 0:
-                        progress.update(task, advance=1)
-                        continue
-                    view1 = masks.to(self.device)
+                # batch is (masks,) for VICReg
+                masks = batch
+
+                # Skip empty batches (can happen in online mode)
+                if masks.size(0) == 0:
+                    progress.update(task, advance=1)
+                    continue
+
+                masks = masks.to(self.device)
 
                 # Zero gradients
                 self.optimizer.zero_grad()
@@ -144,52 +136,28 @@ class Trainer:
                 # Forward pass with mixed precision
                 if self.scaler is not None:
                     with autocast():
-                        if self.loss_type == 'contrastive':
-                            # Encode both views
-                            h1 = self.encoder(view1)
-                            h2 = self.encoder(view2)
+                        # Encode
+                        h = self.encoder(masks)
 
-                            # Project to embedding space
-                            z1 = self.projection_head(h1)
-                            z2 = self.projection_head(h2)
+                        # Project to embedding space
+                        z = self.projection_head(h)
 
-                            # Compute contrastive loss
-                            loss = self.criterion(z1, z2)
-                        else:  # uniformity
-                            # Encode once
-                            h = self.encoder(view1)
-
-                            # Project to embedding space
-                            z = self.projection_head(h)
-
-                            # Compute uniformity loss
-                            loss = self.criterion(z)
+                        # Compute VICReg loss
+                        loss = self.criterion(z)
 
                     # Backward pass with mixed precision
                     self.scaler.scale(loss).backward()
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
-                    if self.loss_type == 'contrastive':
-                        # Encode both views
-                        h1 = self.encoder(view1)
-                        h2 = self.encoder(view2)
+                    # Encode
+                    h = self.encoder(masks)
 
-                        # Project
-                        z1 = self.projection_head(h1)
-                        z2 = self.projection_head(h2)
+                    # Project
+                    z = self.projection_head(h)
 
-                        # Loss
-                        loss = self.criterion(z1, z2)
-                    else:  # uniformity
-                        # Encode once
-                        h = self.encoder(view1)
-
-                        # Project
-                        z = self.projection_head(h)
-
-                        # Loss
-                        loss = self.criterion(z)
+                    # Loss
+                    loss = self.criterion(z)
 
                     # Backward
                     loss.backward()
@@ -204,7 +172,7 @@ class Trainer:
                 self.global_step += 1
 
                 # Update progress bar with batch size
-                batch_size = view1.size(0)
+                batch_size = masks.size(0)
                 progress.update(task, advance=1, description=f"Epoch {epoch} | B: {batch_size} | Loss: {loss.item():.4f}")
 
         avg_loss = total_loss / num_batches
