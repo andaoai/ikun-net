@@ -12,6 +12,7 @@ uv.lock
 
 # Kaggle credentials
 data/kaggle.json
+.kaggle/
 
 # Downloaded datasets
 data/imagenet1k/
