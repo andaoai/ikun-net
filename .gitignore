@@ -23,6 +23,7 @@ data/masks_dataset/
 # Output and temporary files
 tmp/
 outputs/
+output/
 
 # Model checkpoints
 checkpoints/
