@@ -113,11 +113,16 @@ def save_combined_results(
     masks_dir = output_dir / "masks"
     masks_dir.mkdir(exist_ok=True)
 
-    # 保存每个组合的 mask
+    # 保存每个组合的 mask（彩色版本，使用该组合的中心 HSV 值）
     for idx, group in enumerate(result.groups):
         mask = (result.combined_mask == idx).astype(np.uint8) * 255
+        # 创建彩色 mask：使用该组合的中心 HSV 值
+        h, w = mask.shape
+        colored_mask_hsv = np.zeros((h, w, 3), dtype=np.uint8)
+        colored_mask_hsv[mask > 0] = [group.h_center, group.s_center, group.v_center]
+        colored_mask_rgb = cv2.cvtColor(colored_mask_hsv, cv2.COLOR_HSV2BGR)
         mask_path = masks_dir / f"{group.group_id}.png"
-        cv2.imwrite(str(mask_path), mask)
+        cv2.imwrite(str(mask_path), colored_mask_rgb)
         group.mask_path = f"masks/{group.group_id}.png"
 
     # 从组合 mask 重建图像
